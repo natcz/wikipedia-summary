@@ -1,7 +1,13 @@
 import torch
 import torch.nn as nn
-from torch_geometric.data import Data, DataLoader
+import torch.nn.functional as F
+from torch_geometric.data import Data
 from torch_geometric.nn import GCNConv
+from sklearn.feature_extraction.text import TfidfVectorizer
+import pandas as pd
+
+from constant import ARTICLES_DF, CATEGORIES_DF
+from constant import STOPLIST as stoplist
 
 
 class GNNModel(nn.Module):
@@ -11,31 +17,27 @@ class GNNModel(nn.Module):
         self.conv2 = GCNConv(hidden_dim, output_dim)
 
     def forward(self, data):
-        x, edge_index, edge_weight = data.x, data.edge_index, data.edge_weight
-        x = self.conv1(x, edge_index, edge_weight=edge_weight)
-        x = torch.relu(x)
-        x = self.conv2(x, edge_index, edge_weight=edge_weight)
+        x, edge_index = data.x, data.edge_index
+
+        x = F.relu(self.conv1(x, edge_index))
+        x = F.relu(self.conv2(x, edge_index))
+
         return x
 
-def create_graph_similarity(df):
-    # Assuming each document is a node and there's an edge between nodes based on similarity
-    texts = df['lemmatized'].tolist()
-    similarity_matrix = text_to_tfidf_similarity(texts)
+
+def create_graph_category():
+    articles_categories_merged_df = pd.merge(ARTICLES_DF, CATEGORIES_DF, on = 'article_id').reset_index()
+    articles_categories_merged_df['node_index'] = range(len(articles_categories_merged_df))
 
     edges = []
-    edge_weights = []
-    for i in range(len(similarity_matrix)):
-        for j in range(i + 1, len(similarity_matrix)):
-            edges.append((i, j))
-            edge_weights.append(similarity_matrix[i, j])
+    for _, group in articles_categories_merged_df.groupby('category'):
+        node_indices = group['node_index'].tolist()
+        edges.extend([(i, j) for i in node_indices for j in node_indices if i != j])
+    edges = list(set(edges))
 
+    tfidf_vectorizer = TfidfVectorizer(max_df=0.8, max_features=1000, stop_words=stoplist)
+    tfidf_matrix = tfidf_vectorizer.fit_transform(ARTICLES_DF["lemmatized"])
+    x = torch.tensor(tfidf_matrix.toarray(), dtype=torch.float32)
     edge_index = torch.tensor(edges, dtype=torch.long).t().contiguous()
-    edge_weight = torch.tensor(edge_weights, dtype=torch.float)
-
-    x = torch.arange(len(df), dtype=torch.float).view(-1, 1)  # Node features (just an example)
-
-    data = Data(x=x, edge_index=edge_index, edge_weight=edge_weight)
-
+    data = Data(x=x, edge_index=edge_index)
     return data
-
-def create_graph_category(df):
